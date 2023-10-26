@@ -1,0 +1,182 @@
+---
+title: "lizard initial EDA"
+author: "Kelly Fan"
+date: '2023-10-18'
+output: pdf_document
+---
+* clean duplicate rows
+* two videos for each(almost) lizard; separate by condition: ob/noobs
+
+# Setup
+```{r message=FALSE}
+#Load relevant libraries
+library(dplyr)
+library(plyr)
+library(tidyr)
+library(lme4)
+# library(car)
+library(lmerTest)
+library(ggplot2)
+library(emmeans)
+library(tidyverse)
+library(RRPP)
+library(scales)
+library(gridExtra)
+
+#Clear memory
+rm(list=ls(all = TRUE))
+```
+
+# Input data
+```{r}
+#Set working directory (assumes data file is available in same location as code)
+current_path = rstudioapi::getActiveDocumentContext()$path 
+setwd(dirname(current_path ))
+#Uploading this ridiculous file and MorphData
+DLCMasterData <- read.table("DLCMasterData.csv", header=T, sep = ",", as.is=T)
+MorphData <- read.table("OWULizard_Morphology.csv", header=T, sep = ",", as.is=T)
+OH_Podarcis_Data <- read.table("OH_Podarcis_Data - ExpLizards_2023.csv", header=T, sep = ",", as.is=T)
+#Add new columns for gravidity status sex etc. to master doc
+DLCMasterDataPlus <- merge(DLCMasterData, OH_Podarcis_Data, by = "Lizard_ID", all.x = T, all.y = T)
+DLCMasterDataPlus$Sex <- as.factor(DLCMasterDataPlus$Sex)
+#Videos were recorded at 120 fps; Re-scale x-axis accordingly
+DLCMasterDataPlus$TimeSeconds <- DLCMasterDataPlus$bodyparts_coords/120
+```
+
+# Overview
+```{r}
+glimpse(DLCMasterDataPlus)
+```
+
+# Likelihood of m_ data
+```{r}
+detach(package:plyr)
+DLCMasterDataPlus %>% 
+  group_by(Condition) %>% 
+  summarise(mean_mHead_llh = mean(m_Head_likelihood),
+            mean_mSG_llh = mean(m_SG_likelihood),
+            mean_mPG_llh = mean(m_PG_likelihood),
+            mean_mTail_llh = mean(m_Tail_likelihood),
+            mean_mURS_llh = mean(m_UR_S_likelihood),
+            mean_mURZ_llh = mean(m_UR_Z_likelihood),
+            mean_mURM_llh = mean(m_UR_M_likelihood),
+            mean_mURT_llh = mean(m_UR_T_likelihood),
+            mean_mLRS_llh = mean(m_LR_S_likelihood),
+            mean_mLRZ_llh = mean(m_LR_Z_likelihood),
+            mean_mLRM_llh = mean(m_LR_M_likelihood),
+            mean_mLRT_llh = mean(m_LR_T_likelihood))
+```
+By this numerical summary, we observed that
+
+* Trails that without obstacles have higher mean likelihoods
+* m_Head (without obstacles) has the highest mean likelihood among all m_ series data, specifically around ~0.82, surpassing our cutoff of 0.75.
+* Trails that with obstacles do not have mean likelihoods greater than 0.75
+
+# Likelihood of NOT m_ data
+```{r}
+DLCMasterDataPlus %>% 
+  group_by(Condition) %>% 
+  summarise(mean_mHead_llh = mean(Head_likelihood),
+            mean_SG_llh = mean(SG_likelihood),
+            mean_PG_llh = mean(PG_likelihood),
+            mean_Tail_llh = mean(Tail_likelihood),
+            mean_URS_llh = mean(UR_S_likelihood),
+            mean_URZ_llh = mean(UR_Z_likelihood),
+            mean_URM_llh = mean(UR_M_likelihood),
+            mean_URT_llh = mean(UR_T_likelihood),
+            mean_LRS_llh = mean(LR_S_likelihood),
+            mean_LRZ_llh = mean(LR_Z_likelihood),
+            mean_LRM_llh = mean(LR_M_likelihood),
+            mean_LRT_llh = mean(LR_T_likelihood))
+```
+There appears to be no discernible pattern in these non-m_ data, while their likelihood is consistently very low.
+
+# Example: lizard Pm332
+## Setup data frame
+We created two separate data frames—one for the trail with obstacles and another for the trail without obstacles. Additionally, we removed entries with m_Head likelihood less than 0.75 from both data frames.
+```{r}
+
+pm332_ob <- DLCMasterDataPlus %>% 
+  filter(Lizard_ID == 'Pm332' & Condition == 'Ob') %>% 
+  filter(m_Head_likelihood > 0.75)
+pm332_no <- DLCMasterDataPlus %>% 
+  filter(Lizard_ID == 'Pm332' & Condition == 'NoObs') %>% 
+  filter(m_Head_likelihood > 0.75)
+```
+
+## About m_head
+### path
+```{r}
+# m_head path
+mhead_ob <- ggplot(pm332_ob, aes(x=m_Head_x,y=m_Head_y, color=bodyparts_coords)) + geom_point()
+mhead_no <- ggplot(pm332_no, aes(x=m_Head_x,y=m_Head_y, color=bodyparts_coords)) + geom_point()
+grid.arrange(mhead_ob, mhead_no, ncol=2, nrow =1)
+```
+The path on the trail with obstacles appears to be more "curved" compared to the trail without obstacles. This observation makes sense, as they likely navigate around obstacles, resulting in a less straight and more curvier path.
+
+### likelihood
+```{r}
+mean(pm332_ob$m_Head_likelihood) # with obstacles
+mean(pm332_no$m_Head_likelihood) # no obstacles
+```
+The mean likelihood without obstacles is higher than likelihood with obstacles, consistent with our earlier observation in the numerical summary.
+
+## Speed (in cm/s)
+We computed the speed of lizard Pm332 by dividing the mirror length (provided as 42.18 cm) by the total time it took for lizard Pm332.
+```{r}
+pm332 <- DLCMasterDataPlus %>% 
+  filter(Lizard_ID == 'Pm332')
+mirror_length <- 42.18 #cm
+mirror_length/pm332$TimeSeconds[nrow(pm332)] 
+```
+
+# Speed between Sex and Gravid status
+## setup data frame
+```{r}
+mirror_length <- 42.18
+
+# obtain each lizard's sex, gravid status and speed
+lizard_ids <- levels(factor(DLCMasterDataPlus$Lizard_ID))
+sexs <- c()
+gravids <- c()
+speeds <- c()
+for (i in 1:length(lizard_ids)){
+  id <- lizard_ids[i]
+  lizard <- filter(DLCMasterDataPlus, Lizard_ID == id)
+  sexs[i] <- lizard$Sex[1]
+  gravids[i] <- lizard$Gravid[1]
+  # obtain their speed
+  n <- nrow(lizard)
+  speed <- mirror_length/lizard$TimeSeconds[n]
+  speeds[i] <- speed
+}
+
+# compile to a data frame
+lizards <- data.frame(id = lizard_ids,
+                      sex = as.factor(sexs), # 1: Female; 2: Male
+                      gravid = gravids,
+                      speed = speeds)
+```
+
+## box-plots comparing
+```{r}
+# female vs male
+sex <- ggplot(lizards, aes(x=sex, y=speed))+
+  geom_boxplot()+
+  labs(title="Female(1) vs Male(2)")
+
+# gravid vs nongravid
+lizards_f <- lizards %>% 
+  filter(!is.na(gravid))
+gravid <- ggplot(lizards_f, aes(x=gravid, y=speed))+
+  geom_boxplot()+
+  labs(title="Nongravid(N) vs Gravid(Y)")
+
+grid.arrange(sex, gravid, ncol=2, nrow =1)
+```
+By the box plots, we observed that
+
+* The speed of all lizards are very similar (~5cm/s), regardless of their Sex and Gravid status. This aligns with our hypothesis: "males and females in different reproductive stages use their bodies differently while sprinting to achieve similar speeds despite their different proportions".
+* The speed range of females is wider than that of males.
+* The speed range of non-gravid lizards is wider than that of gravid ones.
+* The speed of gravid lizard is slightly faster than non-gravid lizard.
